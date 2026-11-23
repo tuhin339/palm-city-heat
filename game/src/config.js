@@ -81,6 +81,78 @@ export const TRAFFIC = {
   parkedCount: 46,
 };
 
+/** The wanted system: how crimes are priced in stars and how the law answers. */
+export const POLICE = {
+  maxStars: 5,
+  /** Cop cars the force keeps on the player at each star level (index: stars - 1). */
+  copsByStars: [2, 2, 3, 4, 5],
+  /** Where a fresh cop joins the hunt: on a junction this far from the player, off camera. */
+  spawnMin: 800,
+  spawnMax: 1250,
+  spawnCooldown: 2.2,
+  /** A cop "sees" the player inside this range with a clear line of sight. */
+  sightRange: 660,
+  /** Seconds unseen before one star cools off; hiding starts the clock again each time. */
+  decaySeconds: 8,
+  /** The bust meter: how fast it fills beside a cop, and how fast it drains when clear. */
+  bustFillFoot: 0.6,
+  bustFillSlowCar: 0.5,
+  bustDrain: 0.4,
+  bustRangeFoot: 118,
+  bustRangeCar: 105,
+  /** Slower than this beside a cop car, a driver is being pinned. */
+  bustSpeed: 48,
+  /** What getting caught costs: a share of the cash on hand, with a floor. */
+  bustFeeRate: 0.12,
+  bustFeeMin: 25,
+  wastedFeeRate: 0.1,
+  wastedFeeMin: 20,
+  /** How long the BUSTED / WASTED card stays up before the respawn. */
+  overSeconds: 2.8,
+  /**
+   * Crimes, priced in stars. A crime only counts when somebody sees it: a pedestrian or a
+   * driver inside `witness` of the act, or a cop inside copWitness (the law hears more).
+   * `cooldown` keeps one long scrape from charging the same crime every step.
+   */
+  crimes: {
+    theft: { stars: 1, witness: 280, cooldown: 3 },
+    crash: { stars: 1, witness: 310, cooldown: 6 },
+    pedHit: { stars: 1, witness: 330, cooldown: 4 },
+    shots: { stars: 1, witness: 370, cooldown: 5 },
+    copHit: { stars: 1, witness: 0, cooldown: 6 },
+  },
+  copWitness: 580,
+};
+
+/** The pistol and the people who shoot back. */
+export const COMBAT = {
+  bulletSpeed: 980,
+  bulletLife: 0.55,
+  bulletDamage: 34,
+  gangBulletDamage: 7,
+  fireInterval: 0.14,
+  gangFireMin: 0.65,
+  gangFireMax: 1.25,
+  gangRange: 340,
+  gangKeepNear: 105,
+  gangKeepFar: 205,
+  gangSpeed: 128,
+  /** Health regained per second once this long has passed without taking damage. */
+  regenDelay: 5,
+  regenRate: 7,
+  /** A fighter who has fallen fades out over this long, then is gone. No gore, just gone. */
+  fadeSeconds: 4,
+};
+
+/** Marisol Vega's jobs: the money on the table for each, in story order. */
+export const MISSIONS = {
+  rewards: [450, 600, 750, 1200],
+  packageCount: 4,
+  packageSeconds: 240,
+  packageRadius: 42,
+  deliverRadius: 78,
+};
+
 export const CLOCK = {
   /** The game opens in the late afternoon, 16:35, and the light never fully leaves. */
   startMinutes: 16 * 60 + 35,
@@ -124,6 +196,22 @@ export const PALETTE = {
   minimapRoad: '#8d7f88',
   minimapCar: '#b9b0b8',
   minimapPlayer: '#ffffff',
+  copBody: '#232a35',
+  copStripe: '#e8e6df',
+  copLightRed: '#ff4b3e',
+  copLightBlue: '#3e8bff',
+  star: '#ffd34d',
+  starEmpty: 'rgba(253, 246, 227, 0.28)',
+  gangShirt: '#43305e',
+  gangAccent: '#c9a227',
+  markerMission: '#ffd34d',
+  markerCopRed: '#ff5a4e',
+  markerCopBlue: '#4e8cff',
+  markerPd: '#4e8cff',
+  objective: '#ffd34d',
+  package: '#ffcf4d',
+  spark: '#ffe9a8',
+  hurt: 'rgba(197, 43, 32, 0.55)',
 };
 
 export const FONT = 'system-ui, -apple-system, "Segoe UI", sans-serif';

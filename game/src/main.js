@@ -6,10 +6,11 @@
 //
 // ?seed=N builds a different city. ?shot=start|chase|play|end (with &seed=N) stages that
 // scene instead of running the loop, paints it twice and sets window.__shotReady.
-import { DEFAULT_SEED, SAVE_KEY, STEP } from './config.js';
+import { DEFAULT_SEED, SAVE_KEY, STEP, VIEW } from './config.js';
 import { createGame, IDLE_CONTROLS } from './game.js';
-import { ACTION_CONFIRM, ACTION_INTERACT, ACTION_NEW, ACTION_PAUSE, createInput } from './input.js';
+import { ACTION_CONFIRM, ACTION_INTERACT, ACTION_MISSION, ACTION_NEW, ACTION_PAUSE, createInput } from './input.js';
 import { createRenderer, SCREEN_PAUSED, SCREEN_PLAY, SCREEN_TITLE } from './render.js';
+import { createAudio } from './audio.js';
 import { stageShot } from './shots.js';
 
 /** The longest frame the loop catches up on; a longer stall (a hidden tab) is dropped, not replayed. */
@@ -57,6 +58,11 @@ function runShot(name) {
 
 function runGame() {
   const input = createInput(canvas);
+  const audio = createAudio();
+  // The synth can only start on a gesture; every key and click offers it one.
+  window.addEventListener('keydown', () => audio.unlock());
+  window.addEventListener('pointerdown', () => audio.unlock());
+
   let game = createGame(seed);
   let save = readSave();
   let screen = SCREEN_TITLE;
@@ -64,6 +70,13 @@ function runGame() {
   let accumulator = 0;
   let last = performance.now();
   let autosaveTimer = AUTOSAVE_SECONDS;
+  let wasOver = false;
+
+  /** Point the game's sound hook at the real synth (a fresh game starts with a silent one). */
+  function wireSound() {
+    game.sound = { play: (name) => audio.play(name) };
+  }
+  wireSound();
 
   game.cameraPan = true;
 
@@ -81,12 +94,14 @@ function runGame() {
 
   function startNewGame() {
     game = createGame(seed);
+    wireSound();
     save = null;
     beginPlay(false);
   }
 
   function startContinue() {
     game = createGame(seed);
+    wireSound();
     if (save !== null) game.restore(save);
     beginPlay(true);
   }
@@ -115,7 +130,10 @@ function runGame() {
       }
       return;
     }
-    if (screen === SCREEN_PLAY && (actions & ACTION_INTERACT)) {
+    if (screen === SCREEN_PLAY && !game.over && (actions & ACTION_MISSION)) {
+      game.acceptMission();
+    }
+    if (screen === SCREEN_PLAY && !game.over && (actions & ACTION_INTERACT)) {
       const result = game.tryEnterExitCar();
       if (result === 'entered') announce('In the car. Drive.');
       else if (result === 'exited') announce('On foot.');
@@ -124,15 +142,22 @@ function runGame() {
 
   function controlsFromInput() {
     const axis = input.axis();
+    const pointer = input.pointer();
+    // The pointer lives in view space; the world aim point is the camera's centre plus the
+    // pointer's offset from the middle of the screen.
+    const aimX = game.camera.x + (pointer.x - VIEW.width / 2);
+    const aimY = game.camera.y + (pointer.y - VIEW.height / 2);
     if (game.player.car) {
       return {
         moveX: 0, moveY: 0, sprint: false,
         throttle: -axis.y, steer: axis.x, handbrake: input.shift(),
+        fire: false, aimX, aimY,
       };
     }
     return {
       moveX: axis.x, moveY: axis.y, sprint: input.shift(),
       throttle: 0, steer: 0, handbrake: false,
+      fire: input.firing(), aimX, aimY,
     };
   }
 
@@ -157,6 +182,12 @@ function runGame() {
     } else {
       accumulator = 0;
     }
+    if (game.over && !wasOver) {
+      announce(game.over.kind === 'busted' ? 'Busted. The PD takes its cut.' : 'Wasted. Palm City General patches you up.');
+    }
+    wasOver = game.over !== null;
+    audio.setMuted(input.muted());
+    audio.update(game);
     renderer.draw(game, screen, { menuIndex, hasSave: save !== null, muted: input.muted() });
   }
 

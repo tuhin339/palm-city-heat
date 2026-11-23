@@ -45,6 +45,27 @@ export function surfaceAt(city, x, y) {
   return 'ground';
 }
 
+/**
+ * True when a building stands on the straight line between two points: the line of sight the
+ * police need to keep eyes on the player, and the clear shot the gunfights need. Sampled along
+ * the line (buildings are big; a step of a few pixels cannot jump one), which keeps it cheap.
+ */
+export function segmentBlocked(city, x1, y1, x2, y2) {
+  const distance = Math.hypot(x2 - x1, y2 - y1);
+  const steps = Math.max(1, Math.ceil(distance / 9));
+  for (let i = 1; i < steps; i += 1) {
+    const t = i / steps;
+    const x = x1 + (x2 - x1) * t;
+    const y = y1 + (y2 - y1) * t;
+    for (const building of city.buildings) {
+      if (x >= building.x && x < building.x + building.w && y >= building.y && y < building.y + building.h) {
+        return true;
+      }
+    }
+  }
+  return false;
+}
+
 export function createCity(random) {
   const vRoads = [];
   for (let i = 0; i < CITY.avenueCount; i += 1) {

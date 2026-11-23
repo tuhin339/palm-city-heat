@@ -8,15 +8,22 @@ import { CLOCK, TRAFFIC, VIEW } from './config.js';
 import { createRandom } from './random.js';
 import { createCity, districtAt } from './world.js';
 import {
-  CAR_MODELS, createCar, createPlayer, findNearestCar, settleCarCollisions, stepCar, stepPlayerOnFoot,
+  CAR_MODELS, carSpeed, createCar, createPlayer, findNearestCar, settleCarCollisions, stepCar, stepPlayerOnFoot,
 } from './entities.js';
 import { createDriverBrain, createPedestrian, driveBrain, pickPedestrianTarget, stepTraffic } from './traffic.js';
+import { createPolice, reportCrime, setWantedStars, stepPolice } from './police.js';
+import { createCombat, stepCombat } from './combat.js';
+import { createMissions, restoreMissions, snapshotMissions, stepMissions } from './missions.js';
 
 const SKID_LIMIT = 520;
 const DUST_LIMIT = 260;
+const SPARK_LIMIT = 300;
 const SKID_LIFE = 26;
 
-export const IDLE_CONTROLS = { moveX: 0, moveY: 0, sprint: false, throttle: 0, steer: 0, handbrake: false };
+export const IDLE_CONTROLS = {
+  moveX: 0, moveY: 0, sprint: false, throttle: 0, steer: 0, handbrake: false,
+  fire: false, aimX: 0, aimY: 0,
+};
 
 export function createGame(seed) {
   const random = createRandom(seed);
@@ -45,6 +52,22 @@ export function createGame(seed) {
     shake: 0,
     autopilot: false,
     autopilotBrain: null,
+    // Session 2 systems hang off these: police.js fills wanted/cops/policeState, combat.js
+    // bullets/gang/combatState, missions.js missionState and the objective/pickup markers.
+    wanted: null,
+    cops: [],
+    policeState: null,
+    bullets: [],
+    gang: [],
+    combatState: null,
+    missionState: null,
+    objective: null, // the world-space target missions point at ({x, y}) or null
+    pickups: [], // glowing crates in the world (the package run's parcels)
+    over: null, // { kind: 'busted' | 'wasted', timer } while the card is up
+    lastOutcome: null, // set by a respawn, read once by missions, then cleared
+    cinematic: false, // screenshot scenes set this: no arrests, no deaths, just the picture
+    hurtFlash: 0, // 0..1 red vignette strength, fed by combat, faded by combat
+    sound: { play() {} }, // main.js replaces this with the real synth; headless runs stay silent
     stats: { carsStolen: 0, distanceDriven: 0, timePlayed: 0, topSpeed: 0 },
     fx: null,
     step,
@@ -54,14 +77,23 @@ export function createGame(seed) {
     restore,
   };
 
+  // The car waiting by the spawn is Danny's own battered runabout: taking it is no crime.
+  if (cars.length > 0) cars[cars.length - 1].ownedByPlayer = true;
+
   const skids = [];
   const dust = [];
+  const sparks = [];
   game.fx = {
     skids,
     dust,
+    sparks,
     addSkid(x, y, angle) {
       skids.push({ x, y, angle, life: SKID_LIFE });
       if (skids.length > SKID_LIMIT) skids.splice(0, skids.length - SKID_LIMIT);
+    },
+    addSpark(x, y, vx, vy, color) {
+      sparks.push({ x, y, vx, vy, life: 0.28, maxLife: 0.28, color });
+      if (sparks.length > SPARK_LIMIT) sparks.splice(0, sparks.length - SPARK_LIMIT);
     },
     addDust(x, y, count, power) {
       for (let i = 0; i < count; i += 1) {
@@ -81,6 +113,10 @@ export function createGame(seed) {
       game.shake = Math.min(9, Math.max(game.shake, amount));
     },
   };
+
+  createPolice(game);
+  createCombat(game);
+  createMissions(game);
 
   function currentDistrict() {
     const focus = player.car ?? player;
@@ -104,6 +140,18 @@ export function createGame(seed) {
       puff.vx *= 1 - Math.min(1, 2.4 * dt);
       puff.vy *= 1 - Math.min(1, 2.4 * dt);
     }
+    for (let i = sparks.length - 1; i >= 0; i -= 1) {
+      const spark = sparks[i];
+      spark.life -= dt;
+      if (spark.life <= 0) {
+        sparks.splice(i, 1);
+        continue;
+      }
+      spark.x += spark.vx * dt;
+      spark.y += spark.vy * dt;
+      spark.vx *= 1 - Math.min(1, 6 * dt);
+      spark.vy *= 1 - Math.min(1, 6 * dt);
+    }
   }
 
   function stepCamera(dt) {
@@ -126,9 +174,15 @@ export function createGame(seed) {
     game.time += dt;
     game.stats.timePlayed += dt;
     game.clockMinutes = (game.clockMinutes + CLOCK.minutesPerSecond * dt) % (24 * 60);
+    game.markers.length = 0;
+    game.objective = null;
+    // While the BUSTED / WASTED card is up the player's hands are off everything.
+    const active = game.over ? IDLE_CONTROLS : controls;
 
     if (player.car) {
-      if (game.autopilot) {
+      if (game.over) {
+        stepCar(player.car, dt, { throttle: 0, steer: 0, handbrake: true }, city, cars, game.fx);
+      } else if (game.autopilot) {
         // The screenshot scenes drive the player's car with a traffic brain, through the
         // normal simulation: same physics, same traffic, same collisions.
         if (game.autopilotBrain === null) {
@@ -136,7 +190,8 @@ export function createGame(seed) {
         }
         driveBrain(city, random, game.autopilotBrain, player.car, game, dt);
       } else {
-        stepCar(player.car, dt, controls, city, cars, game.fx);
+        const impact = stepCar(player.car, dt, active, city, cars, game.fx);
+        if (impact > 160) reportCrime(game, 'crash', player.car.x, player.car.y);
       }
       const speed = Math.hypot(player.car.vx, player.car.vy);
       game.stats.distanceDriven += speed * dt;
@@ -145,7 +200,7 @@ export function createGame(seed) {
       player.y = player.car.y;
       player.angle = player.car.angle;
     } else {
-      stepPlayerOnFoot(player, dt, { x: controls.moveX, y: controls.moveY }, controls.sprint, city, cars, game.fx);
+      stepPlayerOnFoot(player, dt, { x: active.moveX, y: active.moveY }, active.sprint, city, cars, game.fx);
     }
 
     stepTraffic(game, random, dt);
@@ -160,7 +215,14 @@ export function createGame(seed) {
         car.vy = 0;
       }
     }
+    const preSettleSpeed = player.car ? carSpeed(player.car) : 0;
     settleCarCollisions(cars, game.fx);
+    if (player.car && preSettleSpeed - carSpeed(player.car) > 120) {
+      reportCrime(game, 'crash', player.car.x, player.car.y);
+    }
+    stepCombat(game, dt, active);
+    stepPolice(game, dt);
+    stepMissions(game, dt);
     stepFx(dt);
     stepCamera(dt);
   }
@@ -212,8 +274,10 @@ export function createGame(seed) {
       game.peds.push(ped);
       if (game.peds.length > TRAFFIC.targetPeds + 6) game.peds.shift();
       game.stats.carsStolen += 1;
-    } else if (!car.everPlayer) {
+      reportCrime(game, 'theft', car.x, car.y);
+    } else if (!car.everPlayer && !car.ownedByPlayer) {
       game.stats.carsStolen += 1;
+      reportCrime(game, 'theft', car.x, car.y);
     }
     car.driver = 'player';
     car.parked = false;
@@ -240,6 +304,8 @@ export function createGame(seed) {
       cash: player.cash,
       health: player.health,
       clockMinutes: game.clockMinutes,
+      wanted: game.wanted ? game.wanted.stars : 0,
+      missions: snapshotMissions(game),
       stats: { ...game.stats },
     };
   }
@@ -263,6 +329,8 @@ export function createGame(seed) {
     player.y = data.y;
     game.camera.x = data.x;
     game.camera.y = data.y;
+    if (data.missions) restoreMissions(game, data.missions);
+    if (typeof data.wanted === 'number' && data.wanted > 0) setWantedStars(game, data.wanted);
     return true;
   }
 

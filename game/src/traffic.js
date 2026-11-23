@@ -162,6 +162,8 @@ export function createPedestrian(city, random, x, y) {
     speed: 46 + random() * 26,
     state: 'walk', // 'walk' | 'flee' | 'down'
     timer: 0,
+    downBy: null, // 'player' | 'other' once a car has put this walker down
+    crimeCounted: false,
     block: null,
     targetX: x,
     targetY: y,
@@ -263,6 +265,9 @@ function stepPedestrian(game, random, ped, dt) {
       if (Math.hypot(car.vx, car.vy) > 60 && pointInCar(car, ped.x, ped.y, 2)) {
         ped.state = 'down';
         ped.timer = 1.3;
+        // Who did it: the police price a fall the player caused, once per fall.
+        ped.downBy = car.driver === 'player' ? 'player' : 'other';
+        ped.crimeCounted = false;
         if (game.fx) game.fx.addDust(ped.x, ped.y, 5, 60);
         break;
       }

@@ -18,6 +18,8 @@ const CONTROL_LINES = [
   'W A S D / arrows — walk and drive',
   'Shift — sprint on foot, handbrake in a car',
   'E — get into the nearest car, or get out',
+  'Mouse — aim · click or F — fire the pistol',
+  "T — answer Marisol's phone, take the job",
   'P — pause · M — mute',
 ];
 
@@ -239,7 +241,7 @@ export function createRenderer(canvas) {
     }
   }
 
-  function drawCar(car) {
+  function drawCar(car, time) {
     const model = CAR_MODELS[car.model];
     ctx.save();
     ctx.translate(car.x, car.y);
@@ -286,6 +288,18 @@ export function createRenderer(canvas) {
     ctx.fillStyle = '#d23b31';
     ctx.fillRect(-model.length / 2, -model.width / 2 + 3, 3, 5);
     ctx.fillRect(-model.length / 2, model.width / 2 - 8, 3, 5);
+    // A patrol car wears its livery openly: pale flank stripes and a light bar that
+    // strobes red and blue on the game's own clock, so every frame is reproducible.
+    if (car.cop) {
+      ctx.fillStyle = PALETTE.copStripe;
+      ctx.fillRect(-model.length * 0.34, -model.width / 2 + 2, model.length * 0.68, 4);
+      ctx.fillRect(-model.length * 0.34, model.width / 2 - 6, model.length * 0.68, 4);
+      const phase = Math.floor(time * 3.5 + (car.lightPhase || 0)) % 2 === 0;
+      ctx.fillStyle = phase ? PALETTE.copLightRed : 'rgba(255, 75, 62, 0.25)';
+      ctx.fillRect(-model.length * 0.05, -model.width / 2 + 5, 9, model.width / 2 - 5);
+      ctx.fillStyle = phase ? 'rgba(62, 139, 255, 0.25)' : PALETTE.copLightBlue;
+      ctx.fillRect(-model.length * 0.05, 0, 9, model.width / 2 - 5);
+    }
     ctx.restore();
   }
 
@@ -317,6 +331,48 @@ export function createRenderer(canvas) {
     ctx.fillRect(x + Math.cos(angle) * 8 - 1.6, y + Math.sin(angle) * 8 - 1.6, 3.2, 3.2);
   }
 
+  /** The mission target: a pulsing ring on the ground and a pillar of light over it. */
+  function drawObjectiveBeacon(game) {
+    const point = game.objective;
+    if (!point) return;
+    const pulse = 1 + Math.sin(game.time * 4) * 0.16;
+    ctx.strokeStyle = PALETTE.objective;
+    ctx.lineWidth = 3;
+    ctx.beginPath();
+    ctx.ellipse(point.x, point.y, 27 * pulse, 19 * pulse, 0, 0, Math.PI * 2);
+    ctx.stroke();
+    ctx.globalAlpha = 0.15;
+    ctx.fillStyle = PALETTE.objective;
+    ctx.fillRect(point.x - 5, point.y - 190, 10, 190);
+    ctx.globalAlpha = 1;
+    const bob = Math.sin(game.time * 3) * 5;
+    ctx.fillStyle = PALETTE.objective;
+    ctx.save();
+    ctx.translate(point.x, point.y - 202 + bob);
+    ctx.rotate(Math.PI / 4);
+    ctx.fillRect(-7, -7, 14, 14);
+    ctx.restore();
+  }
+
+  /** The package run's parcels: small gold crates that breathe with the game clock. */
+  function drawPickups(game) {
+    for (const pack of game.pickups) {
+      const pulse = 1 + Math.sin(game.time * 5 + pack.x * 0.05) * 0.12;
+      ctx.strokeStyle = PALETTE.package;
+      ctx.lineWidth = 2;
+      ctx.globalAlpha = 0.7;
+      ctx.beginPath();
+      ctx.arc(pack.x, pack.y, 17 * pulse, 0, Math.PI * 2);
+      ctx.stroke();
+      ctx.globalAlpha = 1;
+      ctx.fillStyle = PALETTE.package;
+      ctx.fillRect(pack.x - 8, pack.y - 8, 16, 16);
+      ctx.fillStyle = 'rgba(90, 60, 10, 0.65)';
+      ctx.fillRect(pack.x - 8, pack.y - 2, 16, 4);
+      ctx.fillRect(pack.x - 2, pack.y - 8, 4, 16);
+    }
+  }
+
   function drawWorld(game, cameraView) {
     const city = game.city;
     drawGround(city, cameraView);
@@ -325,20 +381,55 @@ export function createRenderer(canvas) {
     drawBuildings(city, cameraView);
     drawProps(city, cameraView, game.time);
     drawWaterShimmer(city, cameraView, game.time);
+    drawObjectiveBeacon(game);
+    drawPickups(game);
     for (const car of game.cars) {
       if (car.x < cameraView.x - 60 || car.x > cameraView.x + cameraView.w + 60
         || car.y < cameraView.y - 60 || car.y > cameraView.y + cameraView.h + 60) continue;
-      drawCar(car);
+      drawCar(car, game.time);
     }
     for (const ped of game.peds) {
       if (ped.x < cameraView.x - 24 || ped.x > cameraView.x + cameraView.w + 24
         || ped.y < cameraView.y - 24 || ped.y > cameraView.y + cameraView.h + 24) continue;
       drawPerson(ped.x, ped.y, ped.angle, ped.shirt, ped.skin, ped.state === 'down');
     }
+    // The Solana Kings: drawn like anyone else, ringed in their gold so Danny knows them.
+    for (const member of game.gang) {
+      if (member.x < cameraView.x - 24 || member.x > cameraView.x + cameraView.w + 24
+        || member.y < cameraView.y - 24 || member.y > cameraView.y + cameraView.h + 24) continue;
+      ctx.globalAlpha = member.state === 'down' ? Math.max(0, member.fade) : 1;
+      drawPerson(member.x, member.y, member.angle, member.shirt, member.skin, member.state === 'down');
+      if (member.state !== 'down') {
+        ctx.strokeStyle = PALETTE.gangAccent;
+        ctx.lineWidth = 1.6;
+        ctx.beginPath();
+        ctx.arc(member.x, member.y, 12.5, 0, Math.PI * 2);
+        ctx.stroke();
+      }
+      ctx.globalAlpha = 1;
+    }
     if (!game.player.car) {
       const player = game.player;
       drawPerson(player.x, player.y, player.angle, PALETTE.playerShirt, PALETTE.playerSkin, player.knockTimer > 0.45);
     }
+    // Bullets are brief bright streaks along their own velocity.
+    ctx.lineWidth = 2.5;
+    for (const bullet of game.bullets) {
+      ctx.strokeStyle = bullet.from === 'player' ? PALETTE.spark : '#ff9d7a';
+      ctx.beginPath();
+      ctx.moveTo(bullet.x - bullet.vx * 0.014, bullet.y - bullet.vy * 0.014);
+      ctx.lineTo(bullet.x, bullet.y);
+      ctx.stroke();
+    }
+    // Sparks from muzzles and impacts: short, bright, gone.
+    for (const spark of game.fx.sparks) {
+      ctx.globalAlpha = Math.max(0, spark.life / spark.maxLife);
+      ctx.fillStyle = spark.color;
+      ctx.beginPath();
+      ctx.arc(spark.x, spark.y, 2.4, 0, Math.PI * 2);
+      ctx.fill();
+    }
+    ctx.globalAlpha = 1;
     // Dust hangs over everything for its short life.
     for (const puff of game.fx.dust) {
       ctx.fillStyle = 'rgba(216, 190, 150, 0.5)';
@@ -366,23 +457,23 @@ export function createRenderer(canvas) {
   function drawTitle(game, ui) {
     ctx.fillStyle = 'rgba(24, 12, 18, 0.34)';
     ctx.fillRect(0, 0, VIEW.width, VIEW.height);
-    const { y } = drawPanel(760, 470);
+    const { y } = drawPanel(760, 528);
     ctx.textBaseline = 'alphabetic';
-    text(ctx, 'PALM CITY', VIEW.width / 2, y + 92, 64, PALETTE.text, 'center', '800');
-    text(ctx, 'H E A T', VIEW.width / 2, y + 138, 34, PALETTE.accent, 'center', '800');
-    text(ctx, STORY_HOOK, VIEW.width / 2, y + 182, 19, PALETTE.muted, 'center');
-    text(ctx, STORY_HOOK_2, VIEW.width / 2, y + 208, 19, PALETTE.muted, 'center');
+    text(ctx, 'PALM CITY', VIEW.width / 2, y + 88, 64, PALETTE.text, 'center', '800');
+    text(ctx, 'H E A T', VIEW.width / 2, y + 132, 34, PALETTE.accent, 'center', '800');
+    text(ctx, STORY_HOOK, VIEW.width / 2, y + 174, 19, PALETTE.muted, 'center');
+    text(ctx, STORY_HOOK_2, VIEW.width / 2, y + 200, 19, PALETTE.muted, 'center');
     for (let i = 0; i < CONTROL_LINES.length; i += 1) {
-      text(ctx, CONTROL_LINES[i], VIEW.width / 2, y + 252 + i * 27, 17, PALETTE.text, 'center');
+      text(ctx, CONTROL_LINES[i], VIEW.width / 2, y + 238 + i * 26, 17, PALETTE.text, 'center');
     }
-    const menuY = y + 388;
+    const menuY = y + 434;
     const newColor = ui.menuIndex === 0 ? PALETTE.accent : PALETTE.muted;
     text(ctx, ui.menuIndex === 0 ? '▸ NEW GAME' : 'NEW GAME', VIEW.width / 2 - 130, menuY, 24, newColor, 'center', '700');
     if (ui.hasSave) {
       const continueColor = ui.menuIndex === 1 ? PALETTE.accent : PALETTE.muted;
       text(ctx, ui.menuIndex === 1 ? '▸ CONTINUE' : 'CONTINUE', VIEW.width / 2 + 130, menuY, 24, continueColor, 'center', '700');
     }
-    text(ctx, '↑ ↓ choose · Enter start', VIEW.width / 2, y + 432, 16, PALETTE.muted, 'center');
+    text(ctx, '↑ ↓ choose · Enter start', VIEW.width / 2, y + 476, 16, PALETTE.muted, 'center');
     void game;
   }
 
@@ -403,6 +494,44 @@ export function createRenderer(canvas) {
       text(ctx, lines[i], VIEW.width / 2, y + 138 + i * 30, 19, PALETTE.muted, 'center');
     }
     text(ctx, 'P or Esc to keep driving · progress saved', VIEW.width / 2, y + 272, 16, PALETTE.accent, 'center');
+  }
+
+  /** Red at the edges of the world when Danny is hurt — and worse when he is nearly done. */
+  function drawHurt(game) {
+    let alpha = Math.min(0.5, game.hurtFlash * 0.55);
+    if (game.player.health > 0 && game.player.health < 30) {
+      alpha = Math.max(alpha, 0.14 + Math.sin(game.time * 5) * 0.06);
+    }
+    if (alpha <= 0.02) return;
+    ctx.globalAlpha = alpha;
+    ctx.fillStyle = PALETTE.hurt;
+    const band = 52;
+    ctx.fillRect(0, 0, VIEW.width, band);
+    ctx.fillRect(0, VIEW.height - band, VIEW.width, band);
+    ctx.fillRect(0, 0, band, VIEW.height);
+    ctx.fillRect(VIEW.width - band, 0, band, VIEW.height);
+    ctx.globalAlpha = 1;
+  }
+
+  /** The card that ends a run at the law or the pavement: what happened, and what it cost. */
+  function drawOver(game) {
+    const over = game.over;
+    if (!over) return;
+    ctx.fillStyle = 'rgba(24, 10, 14, 0.55)';
+    ctx.fillRect(0, 0, VIEW.width, VIEW.height);
+    const { y } = drawPanel(620, 250);
+    ctx.textBaseline = 'alphabetic';
+    const busted = over.kind === 'busted';
+    text(ctx, busted ? 'BUSTED' : 'WASTED', VIEW.width / 2, y + 96, 58, PALETTE.danger, 'center', '800');
+    text(ctx, busted
+      ? 'The Palm City PD takes its cut of your cash.'
+      : 'You wake up in Palm City General, lighter in the pocket.',
+    VIEW.width / 2, y + 142, 19, PALETTE.text, 'center');
+    text(ctx, busted
+      ? 'You are released outside the station. The stars are forgotten.'
+      : 'Patched up and discharged. The city kept the change.',
+    VIEW.width / 2, y + 172, 17, PALETTE.muted, 'center');
+    text(ctx, '…', VIEW.width / 2, y + 214, 20, PALETTE.accent, 'center');
   }
 
   /**
@@ -429,7 +558,9 @@ export function createRenderer(canvas) {
       return;
     }
     drawHud(ctx, game, game.currentDistrict().name, ui.muted);
+    drawHurt(game);
     if (screen === SCREEN_PAUSED) drawPaused(game);
+    drawOver(game);
   }
 
   resize();

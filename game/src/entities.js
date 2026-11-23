@@ -84,7 +84,7 @@ export function findNearestCar(cars, x, y, maxDistance) {
 }
 
 /** Push a circle out of every building rectangle it touches; returns the impact speed shed. */
-function resolveCircleAgainstBuildings(city, body, radius) {
+export function resolveCircleAgainstBuildings(city, body, radius) {
   let impact = 0;
   for (const building of city.buildings) {
     if (body.x + radius < building.x || body.x - radius > building.x + building.w
