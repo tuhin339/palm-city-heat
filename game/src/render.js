@@ -1,39 +1,61 @@
-// Drawing only: the world's state and the current screen in, pixels out. The 1280x720 playfield
-// is scaled to fit the window and centred, the margin filled with the backdrop colour. Flat
-// rectangles and circles, canvas text for the HUD and the panels. Text that holds a number is
-// rebuilt only when the number changes, so a frame allocates nothing.
-import { FIELD, FONT, LIVES, PALETTE } from './config.js';
-import { KIND_COIN } from './world.js';
+// Drawing only: the game state and the current screen in, pixels out. The world is painted
+// through a camera transform (roads, beach and water, buildings with long late shadows, palms,
+// skid marks, cars, people, dust), then the view is reset to the fixed 1280x720 logical space
+// for the HUD, the minimap and the panels. Anything outside the camera's view is skipped, and
+// the water's shimmer runs on the game's own clock, so a screenshot scene always paints the
+// same frame.
+import { CITY, FONT, PALETTE, VIEW } from './config.js';
+import { CAR_MODELS } from './entities.js';
+import { drawHud } from './hud.js';
 
 export const SCREEN_TITLE = 'title';
 export const SCREEN_PLAY = 'play';
 export const SCREEN_PAUSED = 'paused';
-export const SCREEN_OVER = 'over';
 
-/** The panel's width; its height grows with its lines: room for the title, the lines and the prompt. */
-const PANEL = { width: 600, top: 134, line: 34, bottom: 70 };
-const LIFE_SIZE = 20;
-const LIFE_GAP = 8;
+const STORY_HOOK = 'Danny Marlow is back in Palm City with empty pockets and one phone number:';
+const STORY_HOOK_2 = 'Marisol Vega, who always has work for a driver who keeps his mouth shut.';
+const CONTROL_LINES = [
+  'W A S D / arrows — walk and drive',
+  'Shift — sprint on foot, handbrake in a car',
+  'E — get into the nearest car, or get out',
+  'P — pause · M — mute',
+];
 
-function cachedLabel(prefix) {
-  let value = -1;
-  let text = '';
-  return function label(next) {
-    if (next !== value) {
-      value = next;
-      text = prefix + next;
-    }
-    return text;
-  };
+const fonts = new Map();
+function setFont(ctx, size, weight) {
+  const key = `${weight || ''} ${size}`;
+  if (!fonts.has(key)) fonts.set(key, `${weight ? `${weight} ` : ''}${size}px ${FONT}`);
+  ctx.font = fonts.get(key);
+}
+
+function text(ctx, value, x, y, size, color, align, weight) {
+  setFont(ctx, size, weight);
+  ctx.fillStyle = color;
+  ctx.textAlign = align;
+  ctx.fillText(value, x, y);
+}
+
+function roundRect(ctx, x, y, w, h, r) {
+  ctx.beginPath();
+  ctx.moveTo(x + r, y);
+  ctx.lineTo(x + w - r, y);
+  ctx.arcTo(x + w, y, x + w, y + r, r);
+  ctx.lineTo(x + w, y + h - r);
+  ctx.arcTo(x + w, y + h, x + w - r, y + h, r);
+  ctx.lineTo(x + r, y + h);
+  ctx.arcTo(x, y + h, x, y + h - r, r);
+  ctx.lineTo(x, y + r);
+  ctx.arcTo(x, y, x + r, y, r);
+  ctx.closePath();
+}
+
+function overlapsView(rect, view) {
+  return rect.x < view.x + view.w && rect.x + rect.w > view.x && rect.y < view.y + view.h && rect.y + rect.h > view.y;
 }
 
 export function createRenderer(canvas) {
-  const context = canvas.getContext('2d');
+  const ctx = canvas.getContext('2d');
   const view = { scale: 1, x: 0, y: 0 };
-  const scoreLabel = cachedLabel('Score ');
-  const levelLabel = cachedLabel('Level ');
-  const finalLabel = cachedLabel('Score ');
-  const bestLabel = cachedLabel('Best ');
 
   function resize() {
     const ratio = window.devicePixelRatio || 1;
@@ -41,98 +63,373 @@ export function createRenderer(canvas) {
     const height = Math.round(window.innerHeight * ratio);
     canvas.width = width;
     canvas.height = height;
-    view.scale = Math.min(width / FIELD.width, height / FIELD.height);
-    view.x = (width - FIELD.width * view.scale) / 2;
-    view.y = (height - FIELD.height * view.scale) / 2;
+    view.scale = Math.min(width / VIEW.width, height / VIEW.height);
+    view.x = (width - VIEW.width * view.scale) / 2;
+    view.y = (height - VIEW.height * view.scale) / 2;
   }
 
-  const fonts = new Map();
-  function text(value, x, y, size, color, align) {
-    if (!fonts.has(size)) fonts.set(size, `${size}px ${FONT}`);
-    context.font = fonts.get(size);
-    context.fillStyle = color;
-    context.textAlign = align;
-    context.fillText(value, x, y);
-  }
-
-  function drawField(state) {
-    context.fillStyle = PALETTE.sky;
-    context.fillRect(0, 0, FIELD.width, FIELD.height);
-    context.fillStyle = PALETTE.ground;
-    context.fillRect(0, FIELD.groundY, FIELD.width, FIELD.height - FIELD.groundY);
-
-    const items = state.items;
-    for (let index = 0; index < items.length; index += 1) {
-      const item = items[index];
-      if (!item.active) continue;
-      if (item.kind === KIND_COIN) {
-        context.fillStyle = PALETTE.coin;
-        context.beginPath();
-        context.arc(item.x + item.width / 2, item.y + item.height / 2, item.width / 2, 0, Math.PI * 2);
-        context.fill();
-      } else {
-        context.fillStyle = PALETTE.block;
-        context.fillRect(item.x, item.y, item.width, item.height);
+  function drawGround(city, cameraView) {
+    ctx.fillStyle = PALETTE.ground;
+    ctx.fillRect(cameraView.x, cameraView.y, cameraView.w, cameraView.h);
+    for (const block of city.blocks) {
+      if (!overlapsView(block, cameraView)) continue;
+      ctx.fillStyle = block.park ? PALETTE.park : PALETTE.sidewalk;
+      ctx.fillRect(block.x, block.y, block.w, block.h);
+      if (!block.park) {
+        ctx.fillStyle = PALETTE.plaza;
+        ctx.fillRect(
+          block.x + CITY.sidewalk, block.y + CITY.sidewalk,
+          block.w - CITY.sidewalk * 2, block.h - CITY.sidewalk * 2,
+        );
       }
     }
+    // Sand, then water with a foam edge and a slow shimmer that runs on the game clock.
+    ctx.fillStyle = PALETTE.sand;
+    ctx.fillRect(cameraView.x, city.sandY, cameraView.w, city.waterY - city.sandY);
+    ctx.fillStyle = PALETTE.sandDark;
+    for (let x = Math.floor(cameraView.x / 90) * 90; x < cameraView.x + cameraView.w; x += 90) {
+      ctx.fillRect(x + 20, city.sandY + 60 + ((x * 37) % 120), 34, 7);
+    }
+    ctx.fillStyle = PALETTE.water;
+    ctx.fillRect(cameraView.x, city.waterY, cameraView.w, city.height - city.waterY);
+    ctx.fillStyle = PALETTE.waterDeep;
+    ctx.fillRect(cameraView.x, city.waterY + 90, cameraView.w, city.height - city.waterY - 90);
+  }
 
-    const player = state.player;
-    // Blink while invulnerable after a hit: hidden on every other tenth of a second.
-    if (player.invulnerable === 0 || Math.floor(player.invulnerable * 10) % 2 === 1) {
-      context.fillStyle = PALETTE.player;
-      context.fillRect(player.x, player.y, player.width, player.height);
+  function drawWaterShimmer(city, cameraView, time) {
+    ctx.fillStyle = PALETTE.waterFoam;
+    ctx.globalAlpha = 0.75;
+    const startX = Math.floor(cameraView.x / 46) * 46;
+    for (let x = startX; x < cameraView.x + cameraView.w; x += 46) {
+      const wobble = Math.sin(time * 1.7 + x * 0.05) * 3;
+      ctx.fillRect(x, city.waterY + 3 + wobble, 26, 3);
+    }
+    ctx.globalAlpha = 0.3;
+    for (let row = 0; row < 3; row += 1) {
+      const y = city.waterY + 34 + row * 44;
+      for (let x = startX; x < cameraView.x + cameraView.w; x += 120) {
+        const drift = Math.sin(time * 0.9 + x * 0.03 + row * 2.1) * 9;
+        ctx.fillRect(x + drift + row * 37, y, 44, 3);
+      }
+    }
+    ctx.globalAlpha = 1;
+  }
+
+  function drawRoads(city, cameraView) {
+    const half = CITY.roadWidth / 2;
+    ctx.fillStyle = PALETTE.asphalt;
+    for (const road of city.vRoads) {
+      if (road.x + half < cameraView.x || road.x - half > cameraView.x + cameraView.w) continue;
+      ctx.fillRect(road.x - half, cameraView.y, CITY.roadWidth, cameraView.h);
+    }
+    for (const road of city.hRoads) {
+      if (road.y + half < cameraView.y || road.y - half > cameraView.y + cameraView.h) continue;
+      ctx.fillRect(cameraView.x, road.y - half, cameraView.w, CITY.roadWidth);
+    }
+    // Kerb lines, then the dashed centre lines, only where the camera can see them.
+    ctx.fillStyle = PALETTE.asphaltEdge;
+    for (const road of city.vRoads) {
+      if (road.x + half < cameraView.x || road.x - half > cameraView.x + cameraView.w) continue;
+      ctx.fillRect(road.x - half, cameraView.y, 3, cameraView.h);
+      ctx.fillRect(road.x + half - 3, cameraView.y, 3, cameraView.h);
+    }
+    for (const road of city.hRoads) {
+      if (road.y + half < cameraView.y || road.y - half > cameraView.y + cameraView.h) continue;
+      ctx.fillRect(cameraView.x, road.y - half, cameraView.w, 3);
+      ctx.fillRect(cameraView.x, road.y + half - 3, cameraView.w, 3);
+    }
+    ctx.fillStyle = PALETTE.laneMark;
+    const dash = 30;
+    const gap = 26;
+    for (const road of city.vRoads) {
+      if (road.x + half < cameraView.x || road.x - half > cameraView.x + cameraView.w) continue;
+      const first = Math.floor(cameraView.y / (dash + gap)) * (dash + gap);
+      for (let y = first; y < cameraView.y + cameraView.h; y += dash + gap) {
+        ctx.fillRect(road.x - 2, y, 4, dash);
+      }
+    }
+    for (const road of city.hRoads) {
+      if (road.y + half < cameraView.y || road.y - half > cameraView.y + cameraView.h) continue;
+      const first = Math.floor(cameraView.x / (dash + gap)) * (dash + gap);
+      for (let x = first; x < cameraView.x + cameraView.w; x += dash + gap) {
+        ctx.fillRect(x, road.y - 2, dash, 4);
+      }
     }
   }
 
-  function drawHud(state) {
-    context.textBaseline = 'top';
-    text(scoreLabel(state.score), 24, 20, 28, PALETTE.text, 'left');
-    text(levelLabel(state.level), FIELD.width / 2, 20, 28, PALETTE.text, 'center');
-    const firstLife = FIELD.width - 24 - LIVES * (LIFE_SIZE + LIFE_GAP) + LIFE_GAP;
-    text('Lives', firstLife - 12, 20, 28, PALETTE.text, 'right');
-    for (let life = 0; life < LIVES; life += 1) {
-      context.fillStyle = life < state.lives ? PALETTE.player : PALETTE.ground;
-      context.fillRect(firstLife + life * (LIFE_SIZE + LIFE_GAP), 24, LIFE_SIZE, LIFE_SIZE);
+  function drawSkids(fx, cameraView) {
+    ctx.fillStyle = '#2e2622';
+    for (const skid of fx.skids) {
+      if (skid.x < cameraView.x - 20 || skid.x > cameraView.x + cameraView.w + 20
+        || skid.y < cameraView.y - 20 || skid.y > cameraView.y + cameraView.h + 20) continue;
+      ctx.globalAlpha = Math.min(0.55, skid.life * 0.05);
+      ctx.save();
+      ctx.translate(skid.x, skid.y);
+      ctx.rotate(skid.angle);
+      ctx.fillRect(-7, -3, 14, 6);
+      ctx.restore();
+    }
+    ctx.globalAlpha = 1;
+  }
+
+  function drawBuildings(city, cameraView) {
+    for (const building of city.buildings) {
+      if (!overlapsView(building, cameraView)) continue;
+      const lift = building.storeys * 3.2;
+      ctx.fillStyle = PALETTE.buildingShadow;
+      ctx.fillRect(building.x + lift, building.y + lift, building.w, building.h);
+      ctx.fillStyle = building.color;
+      ctx.fillRect(building.x, building.y, building.w, building.h);
+      ctx.fillStyle = building.roof;
+      const inset = 7;
+      ctx.fillRect(building.x + inset, building.y + inset, building.w - inset * 2, building.h - inset * 2);
+      // Roof furniture: a stairwell box and a water tank, placed off the building's own numbers.
+      ctx.fillStyle = 'rgba(60, 40, 34, 0.35)';
+      const boxW = Math.min(30, building.w * 0.3);
+      const boxH = Math.min(24, building.h * 0.3);
+      ctx.fillRect(building.x + inset + 6, building.y + inset + 6, boxW, boxH);
+      if (building.w > 90 && building.h > 90) {
+        ctx.beginPath();
+        ctx.arc(building.x + building.w - inset - 16, building.y + building.h - inset - 16, 9, 0, Math.PI * 2);
+        ctx.fill();
+      }
     }
   }
 
-  function drawPanel(title, lines, prompt) {
-    const height = PANEL.top + lines.length * PANEL.line + PANEL.bottom;
-    const x = (FIELD.width - PANEL.width) / 2;
-    const y = (FIELD.height - height) / 2;
-    context.fillStyle = PALETTE.panel;
-    context.fillRect(x, y, PANEL.width, height);
-    context.textBaseline = 'alphabetic';
-    text(title, FIELD.width / 2, y + 78, 48, PALETTE.text, 'center');
-    for (let index = 0; index < lines.length; index += 1) {
-      text(lines[index], FIELD.width / 2, y + PANEL.top + index * PANEL.line, 22, PALETTE.muted, 'center');
+  function drawProps(city, cameraView, time) {
+    for (const prop of city.props) {
+      if (prop.x < cameraView.x - 30 || prop.x > cameraView.x + cameraView.w + 30
+        || prop.y < cameraView.y - 30 || prop.y > cameraView.y + cameraView.h + 30) continue;
+      if (prop.kind === 'palm') {
+        const sway = Math.sin(time * 1.3 + prop.sway) * 2.2;
+        ctx.strokeStyle = PALETTE.palmTrunk;
+        ctx.lineWidth = 4;
+        ctx.beginPath();
+        ctx.moveTo(prop.x, prop.y);
+        ctx.lineTo(prop.x + sway * 0.4, prop.y - 7);
+        ctx.stroke();
+        ctx.strokeStyle = PALETTE.palmLeaf;
+        ctx.lineWidth = 3;
+        for (let frond = 0; frond < 6; frond += 1) {
+          const angle = (frond / 6) * Math.PI * 2 + prop.sway;
+          ctx.beginPath();
+          ctx.moveTo(prop.x + sway * 0.4, prop.y - 7);
+          ctx.lineTo(prop.x + sway + Math.cos(angle) * prop.size, prop.y - 7 + Math.sin(angle) * prop.size * 0.62 + 3);
+          ctx.stroke();
+        }
+      } else if (prop.kind === 'lamp') {
+        ctx.fillStyle = PALETTE.lampPost;
+        ctx.fillRect(prop.x - 2, prop.y - 2, 4, 4);
+        ctx.fillStyle = 'rgba(255, 190, 90, 0.5)';
+        ctx.beginPath();
+        ctx.arc(prop.x, prop.y, 6, 0, Math.PI * 2);
+        ctx.fill();
+      } else if (prop.kind === 'hydrant') {
+        ctx.fillStyle = '#c33d31';
+        ctx.fillRect(prop.x - 3, prop.y - 3, 6, 6);
+      } else if (prop.kind === 'umbrella') {
+        ctx.fillStyle = ['#e07a5f', '#3d8bfd', '#f2cc8f'][Math.floor(prop.sway) % 3];
+        ctx.beginPath();
+        ctx.moveTo(prop.x - prop.size, prop.y + 4);
+        ctx.lineTo(prop.x, prop.y - prop.size * 0.7);
+        ctx.lineTo(prop.x + prop.size, prop.y + 4);
+        ctx.closePath();
+        ctx.fill();
+      }
     }
-    text(prompt, FIELD.width / 2, y + height - 40, 24, PALETTE.coin, 'center');
   }
 
-  const TITLE_LINES = ['Dodge the red blocks. Catch the gold coins.', 'Move with ← → or A D.  Pause with P.', ''];
-  const PAUSED_LINES = ['The blocks will wait for you.'];
-  const OVER_LINES = ['', ''];
+  function drawCar(car) {
+    const model = CAR_MODELS[car.model];
+    ctx.save();
+    ctx.translate(car.x, car.y);
+    ctx.rotate(car.angle);
+    ctx.fillStyle = 'rgba(50, 30, 26, 0.3)';
+    roundRect(ctx, -model.length / 2 + 4, -model.width / 2 + 5, model.length, model.width, 7);
+    ctx.fill();
+    // Wheels, the front pair turned with the steering.
+    ctx.fillStyle = '#1d1a1e';
+    const wheelW = 10;
+    const wheelH = 5;
+    const axleX = model.length * 0.31;
+    ctx.fillRect(axleX - wheelW / 2, -model.width / 2 - 1, wheelW, wheelH);
+    ctx.fillRect(axleX - wheelW / 2, model.width / 2 - wheelH + 1, wheelW, wheelH);
+    ctx.fillRect(-axleX - wheelW / 2, -model.width / 2 - 1, wheelW, wheelH);
+    ctx.fillRect(-axleX - wheelW / 2, model.width / 2 - wheelH + 1, wheelW, wheelH);
+    // Body, glass, roof.
+    ctx.fillStyle = car.color;
+    roundRect(ctx, -model.length / 2, -model.width / 2, model.length, model.width, 7);
+    ctx.fill();
+    ctx.fillStyle = 'rgba(24, 30, 40, 0.85)';
+    roundRect(ctx, model.length * 0.08, -model.width / 2 + 4, model.length * 0.2, model.width - 8, 3);
+    ctx.fill();
+    roundRect(ctx, -model.length * 0.3, -model.width / 2 + 4, model.length * 0.13, model.width - 8, 3);
+    ctx.fill();
+    ctx.fillStyle = car.color;
+    roundRect(ctx, -model.length * 0.14, -model.width / 2 + 3, model.length * 0.2, model.width - 6, 3);
+    ctx.fill();
+    // The driver, seen through the roof as a head and shoulders.
+    if (car.driver !== null) {
+      ctx.fillStyle = car.driver === 'player' ? PALETTE.playerShirt : '#4a4a55';
+      ctx.beginPath();
+      ctx.arc(-model.length * 0.02, 0, 6.4, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.fillStyle = PALETTE.playerSkin;
+      ctx.beginPath();
+      ctx.arc(-model.length * 0.02, 0, 3.6, 0, Math.PI * 2);
+      ctx.fill();
+    }
+    // Lights: warm at the front, red at the back.
+    ctx.fillStyle = '#ffe9a8';
+    ctx.fillRect(model.length / 2 - 3, -model.width / 2 + 3, 3, 5);
+    ctx.fillRect(model.length / 2 - 3, model.width / 2 - 8, 3, 5);
+    ctx.fillStyle = '#d23b31';
+    ctx.fillRect(-model.length / 2, -model.width / 2 + 3, 3, 5);
+    ctx.fillRect(-model.length / 2, model.width / 2 - 8, 3, 5);
+    ctx.restore();
+  }
 
-  /** Paint one frame: the field, then the HUD or a panel for the screen the game is on. */
-  function draw(state, screen, best) {
-    context.setTransform(1, 0, 0, 1, 0, 0);
-    context.fillStyle = PALETTE.backdrop;
-    context.fillRect(0, 0, canvas.width, canvas.height);
-    context.setTransform(view.scale, 0, 0, view.scale, view.x, view.y);
-    drawField(state);
-    if (screen === SCREEN_TITLE) {
-      TITLE_LINES[2] = bestLabel(best);
-      drawPanel('Block Dodger', TITLE_LINES, 'Press Space or click to start');
+  function drawPerson(x, y, angle, shirt, skin, down) {
+    ctx.fillStyle = 'rgba(50, 30, 26, 0.28)';
+    ctx.beginPath();
+    ctx.ellipse(x + 3, y + 4, 10, 7, 0, 0, Math.PI * 2);
+    ctx.fill();
+    if (down) {
+      ctx.fillStyle = shirt;
+      ctx.save();
+      ctx.translate(x, y);
+      ctx.rotate(angle);
+      roundRect(ctx, -13, -6, 26, 12, 6);
+      ctx.fill();
+      ctx.restore();
       return;
     }
-    drawHud(state);
-    if (screen === SCREEN_PAUSED) drawPanel('Paused', PAUSED_LINES, 'Press P to resume');
-    else if (screen === SCREEN_OVER) {
-      OVER_LINES[0] = finalLabel(state.score);
-      OVER_LINES[1] = bestLabel(best);
-      drawPanel('Game over', OVER_LINES, 'Press Space or click to play again');
+    ctx.fillStyle = shirt;
+    ctx.beginPath();
+    ctx.arc(x, y, 9, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.fillStyle = skin;
+    ctx.beginPath();
+    ctx.arc(x, y, 5.2, 0, Math.PI * 2);
+    ctx.fill();
+    // A nose-tick shows the way they face.
+    ctx.fillStyle = shirt;
+    ctx.fillRect(x + Math.cos(angle) * 8 - 1.6, y + Math.sin(angle) * 8 - 1.6, 3.2, 3.2);
+  }
+
+  function drawWorld(game, cameraView) {
+    const city = game.city;
+    drawGround(city, cameraView);
+    drawRoads(city, cameraView);
+    drawSkids(game.fx, cameraView);
+    drawBuildings(city, cameraView);
+    drawProps(city, cameraView, game.time);
+    drawWaterShimmer(city, cameraView, game.time);
+    for (const car of game.cars) {
+      if (car.x < cameraView.x - 60 || car.x > cameraView.x + cameraView.w + 60
+        || car.y < cameraView.y - 60 || car.y > cameraView.y + cameraView.h + 60) continue;
+      drawCar(car);
     }
+    for (const ped of game.peds) {
+      if (ped.x < cameraView.x - 24 || ped.x > cameraView.x + cameraView.w + 24
+        || ped.y < cameraView.y - 24 || ped.y > cameraView.y + cameraView.h + 24) continue;
+      drawPerson(ped.x, ped.y, ped.angle, ped.shirt, ped.skin, ped.state === 'down');
+    }
+    if (!game.player.car) {
+      const player = game.player;
+      drawPerson(player.x, player.y, player.angle, PALETTE.playerShirt, PALETTE.playerSkin, player.knockTimer > 0.45);
+    }
+    // Dust hangs over everything for its short life.
+    for (const puff of game.fx.dust) {
+      ctx.fillStyle = 'rgba(216, 190, 150, 0.5)';
+      ctx.globalAlpha = Math.min(0.55, puff.life);
+      ctx.beginPath();
+      ctx.arc(puff.x, puff.y, puff.size, 0, Math.PI * 2);
+      ctx.fill();
+    }
+    ctx.globalAlpha = 1;
+  }
+
+  function drawPanel(width, height) {
+    const x = (VIEW.width - width) / 2;
+    const y = (VIEW.height - height) / 2;
+    ctx.fillStyle = PALETTE.panel;
+    roundRect(ctx, x, y, width, height, 14);
+    ctx.fill();
+    ctx.strokeStyle = PALETTE.panelEdge;
+    ctx.lineWidth = 2;
+    roundRect(ctx, x, y, width, height, 14);
+    ctx.stroke();
+    return { x, y };
+  }
+
+  function drawTitle(game, ui) {
+    ctx.fillStyle = 'rgba(24, 12, 18, 0.34)';
+    ctx.fillRect(0, 0, VIEW.width, VIEW.height);
+    const { y } = drawPanel(760, 470);
+    ctx.textBaseline = 'alphabetic';
+    text(ctx, 'PALM CITY', VIEW.width / 2, y + 92, 64, PALETTE.text, 'center', '800');
+    text(ctx, 'H E A T', VIEW.width / 2, y + 138, 34, PALETTE.accent, 'center', '800');
+    text(ctx, STORY_HOOK, VIEW.width / 2, y + 182, 19, PALETTE.muted, 'center');
+    text(ctx, STORY_HOOK_2, VIEW.width / 2, y + 208, 19, PALETTE.muted, 'center');
+    for (let i = 0; i < CONTROL_LINES.length; i += 1) {
+      text(ctx, CONTROL_LINES[i], VIEW.width / 2, y + 252 + i * 27, 17, PALETTE.text, 'center');
+    }
+    const menuY = y + 388;
+    const newColor = ui.menuIndex === 0 ? PALETTE.accent : PALETTE.muted;
+    text(ctx, ui.menuIndex === 0 ? '▸ NEW GAME' : 'NEW GAME', VIEW.width / 2 - 130, menuY, 24, newColor, 'center', '700');
+    if (ui.hasSave) {
+      const continueColor = ui.menuIndex === 1 ? PALETTE.accent : PALETTE.muted;
+      text(ctx, ui.menuIndex === 1 ? '▸ CONTINUE' : 'CONTINUE', VIEW.width / 2 + 130, menuY, 24, continueColor, 'center', '700');
+    }
+    text(ctx, '↑ ↓ choose · Enter start', VIEW.width / 2, y + 432, 16, PALETTE.muted, 'center');
+    void game;
+  }
+
+  function drawPaused(game) {
+    ctx.fillStyle = 'rgba(24, 12, 18, 0.45)';
+    ctx.fillRect(0, 0, VIEW.width, VIEW.height);
+    const { y } = drawPanel(520, 300);
+    ctx.textBaseline = 'alphabetic';
+    text(ctx, 'PAUSED', VIEW.width / 2, y + 84, 44, PALETTE.text, 'center', '800');
+    const stats = game.stats;
+    const lines = [
+      `Cash on hand  $${game.player.cash.toLocaleString('en-US')}`,
+      `Cars taken  ${stats.carsStolen}`,
+      `Distance driven  ${(stats.distanceDriven / 52).toFixed(1)} km`,
+      `Time in Palm City  ${Math.floor(stats.timePlayed / 60)}m ${Math.floor(stats.timePlayed % 60)}s`,
+    ];
+    for (let i = 0; i < lines.length; i += 1) {
+      text(ctx, lines[i], VIEW.width / 2, y + 138 + i * 30, 19, PALETTE.muted, 'center');
+    }
+    text(ctx, 'P or Esc to keep driving · progress saved', VIEW.width / 2, y + 272, 16, PALETTE.accent, 'center');
+  }
+
+  /**
+   * Paint one frame. `ui` carries the screen furniture the renderer cannot know:
+   * { menuIndex, hasSave, muted }.
+   */
+  function draw(game, screen, ui) {
+    ctx.setTransform(1, 0, 0, 1, 0, 0);
+    ctx.fillStyle = PALETTE.backdrop;
+    ctx.fillRect(0, 0, canvas.width, canvas.height);
+    const shakeX = game.shake > 0 ? Math.sin(game.time * 61) * game.shake : 0;
+    const shakeY = game.shake > 0 ? Math.cos(game.time * 53) * game.shake : 0;
+    const cameraView = {
+      x: game.camera.x - VIEW.width / 2,
+      y: game.camera.y - VIEW.height / 2,
+      w: VIEW.width,
+      h: VIEW.height,
+    };
+    ctx.setTransform(view.scale, 0, 0, view.scale, view.x - (cameraView.x + shakeX) * view.scale, view.y - (cameraView.y + shakeY) * view.scale);
+    drawWorld(game, cameraView);
+    ctx.setTransform(view.scale, 0, 0, view.scale, view.x, view.y);
+    if (screen === SCREEN_TITLE) {
+      drawTitle(game, ui);
+      return;
+    }
+    drawHud(ctx, game, game.currentDistrict().name, ui.muted);
+    if (screen === SCREEN_PAUSED) drawPaused(game);
   }
 
   resize();
