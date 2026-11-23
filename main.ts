@@ -1,14 +1,12 @@
-// A working gta6-01 entry (Node 22, standard library only): the game is this directory's
-// game/ folder, plain static files a desktop browser loads offline (game/index.html and its ES
-// modules, no library and no network request), and the program hands it in. It copies game/ and
-// screenshots/ from beside this file to /output and writes /output/dossier.json, the summary the
-// judge reads, with the vendored make.fun library. Only the plumbing, not an open world: Block
-// Dodger, a plain 2D canvas game where a paddle dodges falling blocks and catches coins, with a
-// title screen, score, lives and levels, game over and restart, flat colours and no sound. Build
-// your own open-world crime game in its place (three.js or any library you vendor under game/),
-// put your 3 or 4 PNG or JPEG screenshots in screenshots/ (the first by name is the cover) and run it.
+// Palm City Heat — the hand-in program for our gta6-01 entry (Node 22, standard library only).
+// The game itself lives in this directory's game/ folder: Palm City Heat, an original top-down
+// open-world crime game written as plain static files (game/index.html plus the ES modules under
+// game/src/) that a desktop browser loads fully offline — no library, no asset files, no network
+// request. This program is the courier, not the game: it copies game/ and the screenshots/ folder
+// from beside this file into the output directory and writes dossier.json there with the vendored
+// make.fun library, and that dossier is the summary the judge reads.
 //
-// Serve it locally with `node serve.ts`, then open http://localhost:8080.
+// Play it locally with `node serve.ts`, then open http://localhost:8080 in a browser.
 // Outside the grader's container, MAKEFUN_OUTPUT_DIR stands in for /output:
 //   mkdir -p out && MAKEFUN_OUTPUT_DIR=out node main.ts
 
@@ -16,6 +14,7 @@ import { cpSync, existsSync, mkdirSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { buildDossier } from './vendor/makefun-game.ts';
+import { readdirSync, statSync } from 'node:fs';
 
 const here = fileURLToPath(new URL('.', import.meta.url));
 const out = process.env.MAKEFUN_OUTPUT_DIR ?? '/output';
@@ -39,3 +38,58 @@ writeFileSync(
     game_path_max_bytes: 1000,
   }),
 );
+
+// Hand-in self-check (added for Palm City Heat): the dossier above is already written, so this
+// pass only reads the output directory back and holds it against the same caps the dossier was
+// built with. A breach stops the run with an error naming it, long before a scorer has to refuse
+// the entry; a clean pass prints a single summary line and changes nothing.
+
+const HAND_IN_CAPS = { shotMaxFiles: 4, shotMaxBytes: 262144, gameMaxFiles: 993, gameMaxBytes: 50331648, gamePathMaxBytes: 1000 };
+
+/** Every file under `root`, named by its path relative to `root`, gathered recursively. */
+function collectHandInFiles(root) {
+  const found = [];
+  const walk = (dir, prefix) => {
+    for (const entry of readdirSync(dir, { withFileTypes: true })) {
+      const rel = prefix === '' ? entry.name : `${prefix}/${entry.name}`;
+      if (entry.isDirectory()) walk(join(dir, entry.name), rel);
+      else if (entry.isFile()) found.push({ rel, full: join(dir, entry.name) });
+    }
+  };
+  walk(root, '');
+  return found;
+}
+
+function verifyHandIn(outputDir) {
+  const shotsDir = join(outputDir, 'screenshots');
+  const shots = existsSync(shotsDir) ? collectHandInFiles(shotsDir) : [];
+  if (shots.length > HAND_IN_CAPS.shotMaxFiles) {
+    throw new Error(`hand-in check failed: ${shots.length} screenshots exceed the cap of ${HAND_IN_CAPS.shotMaxFiles}`);
+  }
+  for (const shot of shots) {
+    const size = statSync(shot.full).size;
+    if (size > HAND_IN_CAPS.shotMaxBytes) {
+      throw new Error(`hand-in check failed: screenshot ${shot.rel} is ${size} bytes, over the ${HAND_IN_CAPS.shotMaxBytes}-byte cap`);
+    }
+  }
+
+  const gameFiles = collectHandInFiles(join(outputDir, 'game'));
+  if (gameFiles.length > HAND_IN_CAPS.gameMaxFiles) {
+    throw new Error(`hand-in check failed: ${gameFiles.length} game files exceed the cap of ${HAND_IN_CAPS.gameMaxFiles}`);
+  }
+  let gameBytes = 0;
+  for (const file of gameFiles) {
+    gameBytes += statSync(file.full).size;
+    const pathBytes = Buffer.byteLength(file.rel, 'utf8');
+    if (pathBytes > HAND_IN_CAPS.gamePathMaxBytes) {
+      throw new Error(`hand-in check failed: game path ${file.rel} is ${pathBytes} bytes, over the ${HAND_IN_CAPS.gamePathMaxBytes}-byte cap`);
+    }
+  }
+  if (gameBytes > HAND_IN_CAPS.gameMaxBytes) {
+    throw new Error(`hand-in check failed: game files total ${gameBytes} bytes, over the ${HAND_IN_CAPS.gameMaxBytes}-byte cap`);
+  }
+
+  console.log(`hand-in verified: ${gameFiles.length} game files (${gameBytes} bytes), ${shots.length} screenshots, dossier.json written`);
+}
+
+verifyHandIn(out);

@@ -42,3 +42,9 @@ Just open `game/index.html`. For a local server, `node serve.ts` serves the game
 - `main.ts` — the hand-in program: copies `game/` and `screenshots/` to the output and writes the dossier
 
 An entry to the make.fun "Make GTA 6" bounty (gta6-01). Everything here — city, names, story, code — is an original work written for this bounty.
+
+## How this entry was built
+
+Palm City Heat was written by an AI agent working in recorded sessions for this bounty, not typed up beforehand and pasted in. It began from the make.fun kit's starter, which contributed the plumbing only — the `main.ts` hand-in program, the vendored dossier library and the local server — and the placeholder game that came with the kit was thrown away. The city, the driving, the traffic, the police, the missions and the sound were then built in two passes: first the living city and the cars, then the wanted system, the gunplay, Marisol's four jobs and the audio synth laid over the top, each pass checked with headless simulations before the next began.
+
+The pieces fit together the way the Layout list suggests: `world.js` deals the same city from the same seed every time, the simulation modules step it forward at a fixed rate, and `render.js` and `hud.js` only ever draw what the simulation says is true. That determinism is also how the screenshots were made honestly: the `?shot=` scenes in `game/src/shots.js` stage a moment — a police pin, a job briefing, a shootout — and play the real rules forward with an autopilot, so each image in `screenshots/` is a frame the game itself produced, captured in a browser at 1280×800. `main.ts` closes the loop: it copies `game/` and `screenshots/` into the output, writes the dossier the judge reads, and re-checks the hand-in against the entry caps before calling it done.
