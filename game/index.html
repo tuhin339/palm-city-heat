@@ -3,17 +3,122 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Palm City Heat</title>
+<title>Palm City Heat 3D</title>
 <style>
-  html, body { margin: 0; height: 100%; overflow: hidden; background: #241a20; }
-  #game { position: fixed; inset: 0; width: 100%; height: 100%; display: block; touch-action: none; }
+  html, body { margin: 0; height: 100%; overflow: hidden; background: #1d1440; }
+  canvas.webgl { position: fixed; inset: 0; width: 100%; height: 100%; display: block; }
+
+  /* ---------------------------------------------------------- HUD overlay */
+  #hud {
+    position: fixed; inset: 0; pointer-events: none;
+    font-family: "Avenir Next", "Segoe UI", system-ui, sans-serif;
+    color: #fdf6ec; text-shadow: 0 2px 8px rgba(10, 4, 24, 0.85);
+    z-index: 5;
+  }
+  #hud .corner { position: absolute; }
+  #hud-tl { top: 18px; left: 22px; }
+  #hud-tr { top: 18px; right: 22px; text-align: right; }
+  #hud-bl { bottom: 20px; left: 22px; }
+  #hud-br { bottom: 20px; right: 22px; text-align: right; }
+  .game-title {
+    font-size: 21px; font-weight: 800; letter-spacing: 0.22em;
+    background: linear-gradient(180deg, #ffe9b0, #ff8a3d);
+    -webkit-background-clip: text; background-clip: text; -webkit-text-fill-color: transparent;
+    filter: drop-shadow(0 2px 6px rgba(10, 4, 24, 0.8));
+  }
+  #cash { font-size: 24px; font-weight: 700; color: #8be28b; margin-top: 2px; }
+  #cash::before { content: "$"; margin-right: 1px; }
+  #stars { font-size: 26px; letter-spacing: 0.18em; color: #ffd94d; }
+  #stars .off { color: rgba(255, 255, 255, 0.28); }
+  #wanted-label { font-size: 11px; letter-spacing: 0.3em; opacity: 0.85; margin-top: 2px; }
+  #speed { font-size: 44px; font-weight: 800; line-height: 1; }
+  #speed small { font-size: 15px; font-weight: 600; letter-spacing: 0.12em; opacity: 0.85; }
+  #hint { font-size: 12.5px; line-height: 1.7; letter-spacing: 0.06em; opacity: 0.92; }
+  #hint b { color: #ffcf87; font-weight: 700; }
+  #banner {
+    position: absolute; top: 20px; left: 50%; transform: translateX(-50%);
+    max-width: 62%; text-align: center; font-size: 16.5px; font-weight: 600;
+    letter-spacing: 0.04em; padding: 9px 20px; border-radius: 8px;
+    background: rgba(16, 8, 30, 0.55); border: 1px solid rgba(255, 190, 110, 0.35);
+    opacity: 0; transition: opacity 0.4s ease;
+  }
+  #banner.show { opacity: 1; }
+  #banner b { color: #ffcf87; }
+
+  /* --------------------------------------------------------- title screen */
+  #overlay {
+    position: fixed; inset: 0; z-index: 10; display: flex;
+    flex-direction: column; align-items: center; justify-content: flex-start;
+    font-family: "Avenir Next", "Segoe UI", system-ui, sans-serif;
+    background: radial-gradient(ellipse at 50% 108%, rgba(255, 122, 51, 0.30), rgba(13, 6, 28, 0) 55%),
+                linear-gradient(180deg, rgba(13, 6, 28, 0.42), rgba(13, 6, 28, 0) 34%, rgba(13, 6, 28, 0) 70%, rgba(13, 6, 28, 0.45));
+    color: #fdf6ec; text-align: center;
+  }
+  #overlay.hidden { display: none; }
+  #overlay h1 {
+    margin: 7vh 0 0; font-size: clamp(44px, 8.5vw, 96px); font-weight: 900;
+    letter-spacing: 0.12em; line-height: 0.98;
+    background: linear-gradient(180deg, #fff3c4 12%, #ffb36b 48%, #ff5e3a 90%);
+    -webkit-background-clip: text; background-clip: text; -webkit-text-fill-color: transparent;
+    filter: drop-shadow(0 4px 22px rgba(255, 94, 58, 0.45)) drop-shadow(0 2px 3px rgba(10, 4, 24, 0.9));
+  }
+  #overlay .tagline {
+    margin-top: 10px; font-size: clamp(13px, 1.6vw, 18px); letter-spacing: 0.34em;
+    text-transform: uppercase; color: #ffd9ae; text-shadow: 0 2px 10px rgba(10, 4, 24, 0.9);
+  }
+  #startBtn {
+    pointer-events: auto; margin-top: 4.5vh; cursor: pointer;
+    font: inherit; font-size: 19px; font-weight: 800; letter-spacing: 0.24em;
+    color: #2a1408; padding: 14px 46px 14px 52px; border: none; border-radius: 10px;
+    background: linear-gradient(180deg, #ffd94d, #ff8a3d);
+    box-shadow: 0 6px 30px rgba(255, 122, 51, 0.55), inset 0 1px 0 rgba(255, 255, 255, 0.65);
+  }
+  #startBtn:hover { filter: brightness(1.08); }
+  #overlay .controls {
+    margin-top: 3.2vh; font-size: 13.5px; line-height: 1.9; letter-spacing: 0.08em;
+    color: rgba(253, 246, 236, 0.92); text-shadow: 0 1px 8px rgba(10, 4, 24, 0.95);
+  }
+  #overlay .controls b { color: #ffcf87; }
+  #overlay .to2d {
+    margin-top: 2.4vh; font-size: 12.5px; letter-spacing: 0.14em; color: rgba(253, 246, 236, 0.75);
+  }
+  #overlay .to2d a { color: #ffcf87; pointer-events: auto; }
   /* Read aloud, never shown: the status line screen readers announce. */
   #status { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
 </style>
 </head>
 <body>
-<canvas id="game" aria-label="Palm City Heat: an open-world driving game. Walk with W A S D, press E to take a car, drive with W A S D."></canvas>
+<div id="hud" aria-hidden="true">
+  <div class="corner" id="hud-tl">
+    <div class="game-title">PALM CITY HEAT</div>
+    <div id="cash">1,250</div>
+  </div>
+  <div class="corner" id="hud-tr">
+    <div id="stars"></div>
+    <div id="wanted-label">WANTED</div>
+  </div>
+  <div id="banner"></div>
+  <div class="corner" id="hud-bl">
+    <div id="speed">0 <small>KM/H</small></div>
+  </div>
+  <div class="corner" id="hud-br">
+    <div id="hint"><b>W A S D</b> drive &nbsp; <b>SPACE</b> handbrake<br><b>ENTER</b> start &nbsp; mouse / touch not needed</div>
+  </div>
+</div>
+
+<div id="overlay">
+  <h1>PALM CITY<br>HEAT</h1>
+  <div class="tagline">Sunset streets &middot; Fast cars &middot; Bad decisions</div>
+  <button id="startBtn" type="button">&#9654; START ENGINE</button>
+  <div class="controls">
+    <b>W / S</b> accelerate &amp; brake &nbsp;&middot;&nbsp; <b>A / D</b> steer &nbsp;&middot;&nbsp; <b>SPACE</b> handbrake<br>
+    Danny Marlow's city, in 3D at last &mdash; the jobs, the heat and the Kings are still out there.
+  </div>
+  <div class="to2d">Prefer the original top-down game? <a href="./2d.html">Play Palm City Heat 2D</a></div>
+</div>
+
 <p id="status" role="status" aria-live="polite"></p>
-<script type="module" src="./src/main.js"></script>
+<script src="./vendor/three.min.js"></script>
+<script type="module" src="./src3d/main.js"></script>
 </body>
 </html>
